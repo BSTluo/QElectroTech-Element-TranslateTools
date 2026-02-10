@@ -6,7 +6,10 @@
   },
   "timeout_seconds": 20,
   "sleep_seconds": 0.1,
-  "source_lang_priority": ["en", "fr"],
+  "source_lang_priority": [
+    "en",
+    "fr"
+  ],
   "cache_file": "translate_cache.json",
   "max_workers": 2,
   "_comments": {
@@ -18,5 +21,6 @@
     "source_lang_priority": "翻译优先级（先用en，再用fr...）",
     "cache_file": "缓存文件名（不建议改）",
     "max_workers": "并行线程数（0=串行，1-10=并行，推荐5）"
-  }
+  },
+  "qet_elements_path": "D:\\QElectroTech\\elements"
 }

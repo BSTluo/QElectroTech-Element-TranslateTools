@@ -2,15 +2,181 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import time
 import urllib.request
+import winreg
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 import threading
 
 CONFIG_PATH = "translate_config.json"
 SRC_DIR = "src"
 RESULT_DIR = "result"
+
+
+def resolve_shortcut_target(lnk_path):
+    try:
+        escaped_path = str(lnk_path).replace("'", "''")
+        command = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{escaped_path}'); $s.TargetPath",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        target = result.stdout.strip()
+        return target if target else None
+    except Exception:
+        return None
+
+
+def confirm_path(candidate_path, source_label):
+    while True:
+        answer = input(
+            f"检测到{source_label}: {candidate_path}\n是否使用这个路径？[Y/n]: "
+        ).strip().lower()
+        if answer in ("", "y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("请输入 Y 或 N。")
+
+
+def find_qet_installation():
+    """
+    自动检测QElectroTech安装路径（Windows）
+    优先级：
+    1. 从注册表读取
+    2. 从桌面快捷方式解析安装位置
+    3. 检查常见安装位置
+    4. 从配置文件读取用户自定义路径
+    """
+    print("[检测] QElectroTech 安装路径...")
+
+    # 1. 尝试从注册表读取（最准确）
+    try:
+        key_paths = [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\QElectroTech",
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\QElectroTech",
+        ]
+
+        for key_path in key_paths:
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                    install_location, _ = winreg.QueryValueEx(key, "InstallLocation")
+                    elements_path = Path(install_location) / "elements"
+                    if elements_path.exists():
+                        print(f"✓ 从注册表找到: {elements_path}")
+                        return str(elements_path)
+            except FileNotFoundError:
+                continue
+    except Exception as e:
+        print(f"  注册表检测失败: {e}")
+
+    # 2. 从桌面快捷方式解析安装位置
+    desktop_paths = [
+        Path(os.path.expanduser("~")) / "Desktop",
+        Path(r"C:\Users\Public\Desktop"),
+    ]
+    shortcut_candidates = []
+    for desktop in desktop_paths:
+        if not desktop.exists():
+            continue
+        for shortcut in desktop.glob("*.lnk"):
+            if "qelectrotech" in shortcut.name.lower():
+                shortcut_candidates.append(shortcut)
+
+    for shortcut in shortcut_candidates:
+        target = resolve_shortcut_target(shortcut)
+        if not target:
+            continue
+        target_path = Path(target)
+        if not target_path.exists():
+            continue
+        install_dir = target_path.parent
+        elements_path = install_dir / "elements"
+        if elements_path.exists():
+            if confirm_path(elements_path, f"桌面快捷方式 ({shortcut.name})"):
+                print(f"✓ 使用快捷方式路径: {elements_path}")
+                return str(elements_path)
+            break
+
+    # 3. 检查常见安装位置
+    common_paths = [
+        Path(r"C:\Program Files\QElectroTech\elements"),
+        Path(r"C:\Program Files (x86)\QElectroTech\elements"),
+        Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "QElectroTech" / "elements",
+        Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "QElectroTech" / "elements",
+    ]
+
+    print("  检查常见安装位置...")
+    for path in common_paths:
+        if path.exists():
+            print(f"✓ 找到安装路径: {path}")
+            return str(path)
+
+    # 4. 从配置文件读取（如果有）
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+            custom_path = config.get("qet_elements_path")
+            if custom_path:
+                path = Path(custom_path)
+                if path.exists():
+                    print(f"✓ 使用配置文件路径: {path}")
+                    return str(path)
+                else:
+                    print(f"⚠ 配置文件中的路径不存在: {path}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    print("✗ 未找到QElectroTech安装路径")
+    return None
+
+
+def sync_elements(qet_path, src_path):
+    """
+    同步QElectroTech的elements文件夹到src目录
+    """
+    print(f"\n[同步] 开始同步元件库...")
+    print(f"  源路径: {qet_path}")
+    print(f"  目标路径: {src_path}")
+
+    if os.path.exists(src_path):
+        print("  清空现有src目录...")
+        shutil.rmtree(src_path)
+
+    print("  复制文件中...")
+    shutil.copytree(qet_path, src_path)
+
+    file_count = 0
+    for root, _, files in os.walk(src_path):
+        for filename in files:
+            if filename == "qet_directory" or filename.lower().endswith(".elmt"):
+                file_count += 1
+
+    print(f"✓ 同步完成！共 {file_count} 个元件文件")
+    return file_count
+
+
+def add_path_to_config(qet_path):
+    """
+    将QElectroTech路径保存到配置文件中，方便下次使用
+    """
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        config = {}
+
+    config["qet_elements_path"] = qet_path
+
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    print("✓ QElectroTech路径已保存到配置文件")
 
 
 def load_config(path):
@@ -173,20 +339,49 @@ def main():
     print(f"QET Directory & Element Translator")
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
-    
+
     config = load_config(CONFIG_PATH)
+
+    print("\n[1/4] 同步元件库...")
+    qet_path = find_qet_installation()
+    if not qet_path:
+        print("\n❌ 无法自动检测QElectroTech安装路径")
+        print("\n请手动指定路径：")
+        print("方法1: 在 translate_config.json 中添加以下配置：")
+        print('  "qet_elements_path": "C:\\Program Files\\QElectroTech\\elements"')
+        print("\n方法2: 运行时指定路径：")
+        manual_path = input("请输入QElectroTech的elements文件夹路径（或按回车退出）: ").strip()
+
+        if not manual_path:
+            print("已取消")
+            return 1
+
+        qet_path = manual_path.strip('"').strip("'")
+        if not os.path.exists(qet_path):
+            print(f"❌ 路径不存在: {qet_path}")
+            return 1
+
+    try:
+        sync_elements(qet_path, SRC_DIR)
+        add_path_to_config(qet_path)
+    except Exception as e:
+        print(f"\n❌ 同步失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
     cache_path = config.get("cache_file", "translate_cache.json")
     cache = load_cache(cache_path)
 
     # Clean and copy src to result
-    print("\n[1/3] Copying src to result directory...")
+    print("\n[2/4] Copying src to result directory...")
     if os.path.exists(RESULT_DIR):
         shutil.rmtree(RESULT_DIR)
     shutil.copytree(SRC_DIR, RESULT_DIR)
     print("✓ Copy completed")
 
     # Count total files to process
-    print("\n[2/3] Scanning files...")
+    print("\n[3/4] Scanning files...")
     total_files = 0
     file_paths = []
     for root, _, files in os.walk(RESULT_DIR):
@@ -198,7 +393,7 @@ def main():
 
     # Process files with progress
     max_workers = config.get("max_workers", 0)
-    print(f"\n[3/3] Processing and translating...")
+    print(f"\n[4/4] Processing and translating...")
     if max_workers > 0:
         print(f"Mode: Parallel (workers={max_workers})")
     else:
