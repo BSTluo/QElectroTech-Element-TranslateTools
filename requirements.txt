@@ -1,0 +1,8 @@
+# QET Element Translator
+# No external dependencies - uses Python standard library only
+
+# Requirements:
+# - Python 3.7+
+# - Standard library modules: json, os, re, shutil, time, urllib, datetime
+
+# All required modules are included in Python's standard library
