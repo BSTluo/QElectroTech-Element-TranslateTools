@@ -206,6 +206,137 @@ def escape_xml(text):
     )
 
 
+def extract_source_text(xml_text, config):
+    names_match = re.search(r"<names>.*?</names>", xml_text, re.DOTALL)
+    if not names_match:
+        return None
+
+    names_block = names_match.group(0)
+    if re.search(r"<name\s+lang=\"zh\">", names_block):
+        return None
+
+    for lang in config.get("source_lang_priority", ["en", "fr"]):
+        lang_match = re.search(
+            rf"<name\s+lang=\"{re.escape(lang)}\">\s*(.*?)\s*</name>",
+            names_block,
+            re.DOTALL,
+        )
+        if lang_match:
+            return lang_match.group(1).strip()
+
+    return None
+
+
+def insert_zh_name_with_translation(xml_text, translated):
+    names_match = re.search(r"<names>.*?</names>", xml_text, re.DOTALL)
+    if not names_match:
+        return xml_text, False
+
+    names_block = names_match.group(0)
+    if re.search(r"<name\s+lang=\"zh\">", names_block):
+        return xml_text, False
+
+    indent_match = re.search(r"\n([ \t]*)<name", names_block)
+    name_indent = indent_match.group(1) if indent_match else "    "
+    closing_indent_match = re.search(r"\n([ \t]*)</names>", names_block)
+    closing_indent = closing_indent_match.group(1) if closing_indent_match else ""
+
+    new_block = re.sub(
+        r"</names>",
+        f"\n{name_indent}<name lang=\"zh\">{translated}</name>\n{closing_indent}</names>",
+        names_block,
+        count=1,
+    )
+
+    new_text = xml_text.replace(names_block, new_block, 1)
+    return new_text, True
+
+
+def parse_json_array(text):
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        raise RuntimeError("OpenAI response is not a JSON array")
+
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse OpenAI JSON array: {e}")
+
+    if not isinstance(parsed, list):
+        raise RuntimeError("OpenAI response JSON is not an array")
+    return parsed
+
+
+def translate_texts_openai(texts, config):
+    api_key = config.get("openai_api_key")
+    if not api_key:
+        raise RuntimeError("Missing openai_api_key in translate_config.json")
+
+    base_url = config.get("openai_base_url", "https://api.openai.com/v1").rstrip("/")
+    model = config.get("openai_model", "gpt-5.2")
+    to_lang = config.get("to_lang", "zh-CHS")
+
+    prompt_payload = json.dumps(texts, ensure_ascii=False)
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Translate each item to the target language. "
+                    "Return ONLY a JSON array of translated strings in the same order."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Target language: {to_lang}\nItems: {prompt_payload}",
+            },
+        ],
+        "temperature": 0,
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=config.get("timeout_seconds", 20)) as response:
+            body = response.read().decode("utf-8")
+            result = json.loads(body)
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        print(f"OpenAI Error {e.code}: {error_body}")
+        raise RuntimeError(f"OpenAI translation failed: {error_body}")
+
+    choices = result.get("choices", [])
+    if not choices:
+        raise RuntimeError("Empty OpenAI response")
+
+    content = choices[0].get("message", {}).get("content", "")
+    translations = parse_json_array(content)
+    if len(translations) != len(texts):
+        raise RuntimeError("OpenAI response size mismatch")
+
+    time.sleep(config.get("sleep_seconds", 0))
+    return [str(item).strip() for item in translations]
+
+
 def translate_text_openai(text, config):
     api_key = config.get("openai_api_key")
     if not api_key:
@@ -448,22 +579,70 @@ def main():
 
     # Process files with progress
     max_workers = config.get("max_workers", 0)
+    translate_mode = config.get("translate_mode", "api").lower()
+    openai_batch_size = int(config.get("openai_batch_size", 1) or 1)
+
     print(f"\n[4/4] Processing and translating...")
-    if max_workers > 0:
+    if translate_mode == "openai" and openai_batch_size > 1:
+        print(f"Mode: OpenAI Batch (batch_size={openai_batch_size})")
+    elif max_workers > 0:
         print(f"Mode: Parallel (workers={max_workers})")
     else:
         print(f"Mode: Serial")
-    
+
     updated_count = 0
     processed_count = 0
     start_time = time.time()
     cache_lock = threading.Lock()
-    
-    if max_workers > 0:
+
+    if translate_mode == "openai" and openai_batch_size > 1:
+        print("\n  Collecting texts for batch translation...")
+        file_texts = []
+        missing_texts = []
+        seen_texts = set()
+
+        for file_path in file_paths:
+            with open(file_path, "r", encoding="utf-8") as f:
+                original = f.read()
+            source_text = extract_source_text(original, config)
+            if not source_text:
+                continue
+            file_texts.append((file_path, source_text))
+            if source_text in cache or source_text in seen_texts:
+                continue
+            seen_texts.add(source_text)
+            missing_texts.append(source_text)
+
+        total_batches = (len(missing_texts) + openai_batch_size - 1) // openai_batch_size
+        for batch_index in range(0, len(missing_texts), openai_batch_size):
+            batch = missing_texts[batch_index : batch_index + openai_batch_size]
+            batch_number = (batch_index // openai_batch_size) + 1
+            print(f"  Translating batch {batch_number}/{max(1, total_batches)}...")
+            translations = translate_texts_openai(batch, config)
+            for text, translated in zip(batch, translations):
+                cache[text] = translated
+
+        for file_path, source_text in file_texts:
+            with open(file_path, "r", encoding="utf-8") as f:
+                original = f.read()
+            translated = cache.get(source_text)
+            if not translated:
+                processed_count += 1
+                print_progress(processed_count, total_files, updated_count, start_time)
+                continue
+            translated = escape_xml(translated)
+            updated, changed = insert_zh_name_with_translation(original, translated)
+            if changed:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(updated)
+                updated_count += 1
+            processed_count += 1
+            print_progress(processed_count, total_files, updated_count, start_time)
+    elif max_workers > 0:
         # Parallel processing
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {executor.submit(process_file_wrapper, fp, config, cache, cache_lock): fp for fp in file_paths}
-            
+
             for future in as_completed(future_to_file):
                 processed_count += 1
                 try:

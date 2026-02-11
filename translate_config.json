@@ -8,6 +8,7 @@
   "openai_base_url": "https://api.openai.com/v1",
   "openai_api_key": "",
   "openai_model": "gpt-5.2",
+  "openai_batch_size": 20,
   "timeout_seconds": 20,
   "sleep_seconds": 0.1,
   "source_lang_priority": [
@@ -24,6 +25,7 @@
     "openai_base_url": "OpenAI兼容接口地址",
     "openai_api_key": "OpenAI API Key",
     "openai_model": "OpenAI 模型名",
+    "openai_batch_size": "OpenAI批量翻译条数（>1为批量）",
     "timeout_seconds": "API超时时间，网络差可改成30",
     "sleep_seconds": "请求间隔，如API限流改成0.5",
     "source_lang_priority": "翻译优先级（先用en，再用fr...）",
