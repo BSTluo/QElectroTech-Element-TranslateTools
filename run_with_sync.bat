@@ -27,14 +27,7 @@ if not exist "translate_config.json" (
     exit /b 1
 )
 
-REM Check if scripts exist
-if not exist "scripts\sync_from_qet.py" (
-    echo [错误] 未找到同步脚本 scripts/sync_from_qet.py！
-    echo.
-    pause
-    exit /b 1
-)
-
+REM Check if translate script exists
 if not exist "scripts\translate_to_result.py" (
     echo [错误] 未找到翻译脚本 scripts/translate_to_result.py！
     echo.
@@ -42,44 +35,27 @@ if not exist "scripts\translate_to_result.py" (
     exit /b 1
 )
 
-echo [1/4] 检查环境...
+echo [1/2] 检查环境...
 echo ✓ Python 已安装
 echo ✓ 配置文件已找到
-echo ✓ 脚本文件已找到
+echo ✓ 翻译脚本已找到
 echo.
 
-REM Step 1: Sync from QElectroTech
-echo [2/4] 从 QElectroTech 同步元件库...
-echo.
-python scripts/sync_from_qet.py
-
-REM Check sync result
-if errorlevel 1 (
-    echo.
-    echo [错误] 同步失败！
-    echo 请检查：
-    echo   1. QElectroTech 是否已安装
-    echo   2. 或在 translate_config.json 中手动配置 qet_elements_path
-    echo.
-    pause
-    exit /b 1
-)
-
-echo.
-echo [3/4] 开始翻译...
+echo [2/2] 开始同步并翻译...
 echo.
 
-REM Step 2: Run translation
+REM Sync + translate are integrated
 python scripts/translate_to_result.py
 
-REM Check translation result
+REM Check result
 if errorlevel 1 (
     echo.
-    echo [错误] 翻译失败！
+    echo [错误] 执行失败！
     echo 请检查：
     echo   1. translate_config.json 配置是否正确
     echo   2. 网络连接是否正常
     echo   3. API 服务是否可用
+    echo   4. QElectroTech 安装路径是否正确
     echo.
 ) else (
     echo.

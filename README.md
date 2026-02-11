@@ -204,6 +204,10 @@ Updated: 2847 | Speed: 23.4 files/s | ETA: 283s
   "headers": {
     "Content-Type": "application/json"
   },
+  "translate_mode": "api",
+  "openai_base_url": "https://api.openai.com/v1",
+  "openai_api_key": "",
+  "openai_model": "gpt-5.2",
   "timeout_seconds": 20,
   "sleep_seconds": 0.1,
   "source_lang_priority": ["en", "fr"],
@@ -218,6 +222,10 @@ Updated: 2847 | Speed: 23.4 files/s | ETA: 283s
 |--------|------|--------|------|
 | `endpoint` | 翻译API地址 | `https://uapis.cn/...` | 修改为你的API |
 | `to_lang` | 目标语言 | `zh-CHS` | 简体中文 |
+| `translate_mode` | 翻译方式 | `api` | `api` 或 `openai` |
+| `openai_base_url` | OpenAI接口地址 | `https://api.openai.com/v1` | 兼容服务可修改 |
+| `openai_api_key` | OpenAI API Key | 空 | 使用AI翻译必填 |
+| `openai_model` | OpenAI模型 | `gpt-5.2` | 可按需修改 |
 | `timeout_seconds` | API超时（秒） | `20` | 网络差改成30 |
 | `sleep_seconds` | 请求间隔（秒） | `0.1` | API限流改成0.5 |
 | `max_workers` | 并行线程数 | `5` | 0=串行，5=推荐 |

@@ -206,6 +206,57 @@ def escape_xml(text):
     )
 
 
+def translate_text_openai(text, config):
+    api_key = config.get("openai_api_key")
+    if not api_key:
+        raise RuntimeError("Missing openai_api_key in translate_config.json")
+
+    base_url = config.get("openai_base_url", "https://api.openai.com/v1").rstrip("/")
+    model = config.get("openai_model", "gpt-5.2")
+    to_lang = config.get("to_lang", "zh-CHS")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": f"Translate the user text to {to_lang}. Return only the translated text."},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0,
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=config.get("timeout_seconds", 20)) as response:
+            body = response.read().decode("utf-8")
+            result = json.loads(body)
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        print(f"OpenAI Error {e.code}: {error_body}")
+        raise RuntimeError(f"OpenAI translation failed for '{text}': {error_body}")
+
+    choices = result.get("choices", [])
+    if not choices:
+        raise RuntimeError(f"Empty OpenAI response for: {text}")
+
+    translated = choices[0].get("message", {}).get("content", "").strip()
+    if not translated:
+        raise RuntimeError(f"Empty translation for: {text}")
+
+    time.sleep(config.get("sleep_seconds", 0))
+    return translated
+
+
 def translate_text(text, config, cache, cache_lock=None):
     # Thread-safe cache read
     if cache_lock:
@@ -216,26 +267,30 @@ def translate_text(text, config, cache, cache_lock=None):
         if text in cache:
             return cache[text]
 
-    payload = {
-        "ToLang": config["to_lang"],
-        "text": text,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    headers = config.get("headers", {})
-    request = urllib.request.Request(config["endpoint"], data=data, headers=headers, method="POST")
+    mode = config.get("translate_mode", "api").lower()
+    if mode == "openai":
+        translated = translate_text_openai(text, config)
+    else:
+        payload = {
+            "ToLang": config["to_lang"],
+            "text": text,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        headers = config.get("headers", {})
+        request = urllib.request.Request(config["endpoint"], data=data, headers=headers, method="POST")
 
-    try:
-        with urllib.request.urlopen(request, timeout=config.get("timeout_seconds", 20)) as response:
-            body = response.read().decode("utf-8")
-            result = json.loads(body)
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8")
-        print(f"API Error {e.code}: {error_body}")
-        raise RuntimeError(f"Translation API failed for '{text}': {error_body}")
+        try:
+            with urllib.request.urlopen(request, timeout=config.get("timeout_seconds", 20)) as response:
+                body = response.read().decode("utf-8")
+                result = json.loads(body)
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8")
+            print(f"API Error {e.code}: {error_body}")
+            raise RuntimeError(f"Translation API failed for '{text}': {error_body}")
 
-    translated = result.get("translate", "").strip()
-    if not translated:
-        raise RuntimeError(f"Empty translation for: {text}")
+        translated = result.get("translate", "").strip()
+        if not translated:
+            raise RuntimeError(f"Empty translation for: {text}")
 
     # Thread-safe cache write
     if cache_lock:
@@ -243,7 +298,7 @@ def translate_text(text, config, cache, cache_lock=None):
             cache[text] = translated
     else:
         cache[text] = translated
-    
+
     time.sleep(config.get("sleep_seconds", 0))
     return translated
 
