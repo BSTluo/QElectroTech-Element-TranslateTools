@@ -4,10 +4,10 @@
   "headers": {
     "Content-Type": "application/json"
   },
-  "translate_mode": "api",
-  "openai_base_url": "https://api.openai.com/v1",
-  "openai_api_key": "",
-  "openai_model": "gpt-5.2",
+  "translate_mode": "openai",
+  "openai_base_url": "https://88996.cloud/v1",
+  "openai_api_key": "sk-SlM9M98uL4yWG3rTj3v2NCbDQHZagi8W9Bx2Q5Vv0Zx3APrP",
+  "openai_model": "gpt-4.1",
   "openai_batch_size": 20,
   "timeout_seconds": 20,
   "sleep_seconds": 0.1,

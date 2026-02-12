@@ -51,11 +51,11 @@ REM Check result
 if errorlevel 1 (
     echo.
     echo [错误] 执行失败！
-    echo 请检查：
-    echo   1. translate_config.json 配置是否正确
-    echo   2. 网络连接是否正常
-    echo   3. API 服务是否可用
-    echo   4. QElectroTech 安装路径是否正确
+    echo(请检查：
+    echo(  1. translate_config.json 配置是否正确
+    echo(  2. 网络连接是否正常
+    echo(  3. API 服务是否可用
+    echo(  4. QElectroTech 安装路径是否正确
     echo.
 ) else (
     echo.

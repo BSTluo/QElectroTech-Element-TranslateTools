@@ -196,6 +196,27 @@ def save_cache(path, cache):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
+class CacheSaveState:
+    def __init__(self, cache_path, save_every):
+        self.cache_path = cache_path
+        self.save_every = int(save_every) if save_every is not None else 0
+        self.counter = 0
+        self.lock = threading.Lock()
+
+    def maybe_save(self, cache, cache_lock=None):
+        if self.save_every <= 0:
+            return
+        with self.lock:
+            self.counter += 1
+            if self.counter % self.save_every != 0:
+                return
+        if cache_lock:
+            with cache_lock:
+                save_cache(self.cache_path, cache)
+        else:
+            save_cache(self.cache_path, cache)
+
+
 def escape_xml(text):
     return (
         text.replace("&", "&amp;")
@@ -291,7 +312,7 @@ def translate_texts_openai(texts, config):
             {
                 "role": "system",
                 "content": (
-                    "Translate each item to the target language. "
+                    "Translate each item to the target language.These items are all related to industry. "
                     "Return ONLY a JSON array of translated strings in the same order."
                 ),
             },
@@ -388,7 +409,7 @@ def translate_text_openai(text, config):
     return translated
 
 
-def translate_text(text, config, cache, cache_lock=None):
+def translate_text(text, config, cache, cache_lock=None, save_state=None):
     # Thread-safe cache read
     if cache_lock:
         with cache_lock:
@@ -430,11 +451,14 @@ def translate_text(text, config, cache, cache_lock=None):
     else:
         cache[text] = translated
 
+    if save_state:
+        save_state.maybe_save(cache, cache_lock)
+
     time.sleep(config.get("sleep_seconds", 0))
     return translated
 
 
-def insert_zh_name(xml_text, config, cache, cache_lock=None):
+def insert_zh_name(xml_text, config, cache, cache_lock=None, save_state=None):
     names_match = re.search(r"<names>.*?</names>", xml_text, re.DOTALL)
     if not names_match:
         return xml_text, False
@@ -457,7 +481,7 @@ def insert_zh_name(xml_text, config, cache, cache_lock=None):
     if not source_text:
         return xml_text, False
 
-    translated = translate_text(source_text, config, cache, cache_lock)
+    translated = translate_text(source_text, config, cache, cache_lock, save_state)
     translated = escape_xml(translated)
 
     indent_match = re.search(r"\n([ \t]*)<name", names_block)
@@ -476,11 +500,11 @@ def insert_zh_name(xml_text, config, cache, cache_lock=None):
     return new_text, True
 
 
-def process_file(path, config, cache):
+def process_file(path, config, cache, save_state=None):
     with open(path, "r", encoding="utf-8") as f:
         original = f.read()
 
-    updated, changed = insert_zh_name(original, config, cache)
+    updated, changed = insert_zh_name(original, config, cache, save_state=save_state)
     if not changed:
         return False
 
@@ -506,12 +530,12 @@ def print_progress(current, total, updated, start_time):
     print(f"\r[{bar}] {percentage:.1f}% ({current}/{total}) Updated: {updated} | Speed: {rate:.1f} files/s | ETA: {remaining:.0f}s", end="", flush=True)
 
 
-def process_file_wrapper(file_path, config, cache, cache_lock):
+def process_file_wrapper(file_path, config, cache, cache_lock, save_state):
     """Wrapper for parallel processing with thread-safe cache access"""
     with open(file_path, "r", encoding="utf-8") as f:
         original = f.read()
 
-    updated, changed = insert_zh_name(original, config, cache, cache_lock)
+    updated, changed = insert_zh_name(original, config, cache, cache_lock, save_state)
     if not changed:
         return False
 
@@ -581,6 +605,10 @@ def main():
     max_workers = config.get("max_workers", 0)
     translate_mode = config.get("translate_mode", "api").lower()
     openai_batch_size = int(config.get("openai_batch_size", 1) or 1)
+    api_save_every = int(config.get("api_save_every", 10) or 0)
+    save_state = None
+    if translate_mode != "openai":
+        save_state = CacheSaveState(cache_path, api_save_every)
 
     print(f"\n[4/4] Processing and translating...")
     if translate_mode == "openai" and openai_batch_size > 1:
@@ -621,6 +649,7 @@ def main():
             translations = translate_texts_openai(batch, config)
             for text, translated in zip(batch, translations):
                 cache[text] = translated
+            save_cache(cache_path, cache)
 
         for file_path, source_text in file_texts:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -641,7 +670,7 @@ def main():
     elif max_workers > 0:
         # Parallel processing
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_file = {executor.submit(process_file_wrapper, fp, config, cache, cache_lock): fp for fp in file_paths}
+            future_to_file = {executor.submit(process_file_wrapper, fp, config, cache, cache_lock, save_state): fp for fp in file_paths}
 
             for future in as_completed(future_to_file):
                 processed_count += 1
@@ -654,7 +683,7 @@ def main():
     else:
         # Serial processing
         for idx, file_path in enumerate(file_paths, 1):
-            if process_file(file_path, config, cache):
+            if process_file(file_path, config, cache, save_state):
                 updated_count += 1
             print_progress(idx, total_files, updated_count, start_time)
 

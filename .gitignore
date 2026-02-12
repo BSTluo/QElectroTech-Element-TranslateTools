@@ -17,7 +17,6 @@ ENV/
 .DS_Store
 
 # Project-specific
-translate_cache.json
 result/
 src/
 *.log
